@@ -2,8 +2,13 @@ name: Build Image DB
 
 on:
   schedule:
-    - cron: "0 */6 * * *"
+    - cron: "0 3 * * *"
   workflow_dispatch:
+    inputs:
+      force_all:
+        description: '전체 재빌드 (기존 항목 포함)'
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -18,8 +23,26 @@ jobs:
 
       - run: pip install opencv-python-headless httpx numpy
 
-      - name: Build
-        run: python build_image_db.py
+      - name: Download latest image_index.db (for incremental build)
+        if: ${{ !inputs.force_all }}
+        continue-on-error: true   # 첫 빌드이거나 릴리즈가 없으면 스킵
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download --pattern "image_index.db" --dir . || true
+          if [ -f image_index.db ]; then
+            echo "기존 DB 다운로드 완료"
+          else
+            echo "기존 DB 없음 - 전체 빌드"
+          fi
+
+      - name: Build image_index.db
+        run: |
+          FORCE_FLAG=""
+          if [ "${{ inputs.force_all }}" = "true" ]; then
+            FORCE_FLAG="--force-all"
+          fi
+          python scripts/build_image_db.py --db-path image_index.db $FORCE_FLAG
 
       - name: Check changes
         id: changes
