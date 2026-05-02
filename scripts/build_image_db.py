@@ -11,11 +11,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 import sys
-import threading
 import time
 from pathlib import Path
+from dataclasses import dataclass, field
 
 import cv2
 import httpx
@@ -160,15 +161,15 @@ def _compute_hog(gray: np.ndarray) -> np.ndarray:
 # V-Archive 데이터 수집
 # ------------------------------------------------------------------
 
-def fetch_song_ids() -> list[str]:
+def fetch_songs() -> list[dict]:
     print(f"[Fetch] songs.json 다운로드: {SONGS_JSON_URL}")
     try:
         resp = httpx.get(SONGS_JSON_URL, timeout=REQUEST_TIMEOUT)
         resp.raise_for_status()
         songs = resp.json()
-        ids = [str(s["title"]) for s in songs if s.get("title") is not None]
-        print(f"[Fetch] song_id {len(ids)}개 확인")
-        return ids
+        songs = [s for s in songs if s.get("title") is not None]
+        print(f"[Fetch] {len(songs)}곡 확인")
+        return songs
     except Exception as e:
         print(f"[Fetch] songs.json 다운로드 실패: {e}")
         sys.exit(1)
@@ -193,15 +194,24 @@ def download_jacket(song_id: str, client: httpx.Client) -> np.ndarray | None:
 # 메인 빌드 로직
 # ------------------------------------------------------------------
 
-def build(db_path: Path, force_all: bool):
+@dataclass
+class BuildResult:
+    total: int
+    added: list[dict]   # 추가된 곡: {"song_id", "name", "composer"}
+    fail: int
+    skip: int
+
+
+def build(db_path: Path, force_all: bool) -> BuildResult:
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # 스키마 초기화
     with sqlite3.connect(db_path) as conn:
         _ensure_schema(conn)
         conn.commit()
 
-    all_ids = fetch_song_ids()
+    songs = fetch_songs()
+    song_map = {str(s["title"]): s for s in songs}
+    all_ids = list(song_map.keys())
     existing_ids = set() if force_all else _get_existing_ids(db_path)
 
     targets = [sid for sid in all_ids if sid not in existing_ids]
@@ -209,9 +219,9 @@ def build(db_path: Path, force_all: bool):
 
     if not targets:
         print("[Build] 추가할 곡 없음 - 완료")
-        return
+        return BuildResult(total=len(all_ids), added=[], fail=0, skip=0)
 
-    success = 0
+    added = []
     fail = 0
     skip = 0
 
@@ -224,8 +234,13 @@ def build(db_path: Path, force_all: bool):
                     print(f"[{i}/{len(targets)}] SKIP  {song_id} (이미지 없음)")
                     skip += 1
                 elif _upsert_entry(conn, song_id, img):
-                    print(f"[{i}/{len(targets)}] OK    {song_id}")
-                    success += 1
+                    song = song_map[song_id]
+                    print(f"[{i}/{len(targets)}] OK    {song_id} ({song.get('name', '')})")
+                    added.append({
+                        "song_id": song_id,
+                        "name": song.get("name", ""),
+                        "composer": song.get("composer", ""),
+                    })
                 else:
                     print(f"[{i}/{len(targets)}] FAIL  {song_id}")
                     fail += 1
@@ -233,7 +248,8 @@ def build(db_path: Path, force_all: bool):
                 conn.commit()
                 time.sleep(DOWNLOAD_INTERVAL_SEC)
 
-    print(f"\n[Build] 완료: success={success}, fail={fail}, skip={skip}")
+    print(f"\n[Build] 완료: success={len(added)}, fail={fail}, skip={skip}")
+    return BuildResult(total=len(all_ids), added=added, fail=fail, skip=skip)
 
 
 # ------------------------------------------------------------------
@@ -249,4 +265,20 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
-    build(Path(args.db_path), args.force_all)
+    result = build(Path(args.db_path), args.force_all)
+
+    # GitHub Actions에서 릴리즈 노트로 사용할 파일 생성
+    notes_path = Path("release_notes.md")
+    lines = [
+        f"## Image DB",
+        f"",
+        f"- 총 **{result.total}곡** 등록",
+        f"- 이번 업데이트: **{len(result.added)}곡 추가**",
+    ]
+    if result.added:
+        lines += ["", "### 추가된 곡", ""]
+        for s in result.added:
+            lines.append(f"- {s['name']} — {s['composer']}")
+
+    notes_path.write_text("\n".join(lines), encoding="utf-8")
+    print(f"\n[Build] 릴리즈 노트 생성: {notes_path}")

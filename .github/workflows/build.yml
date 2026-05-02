@@ -2,7 +2,7 @@ name: Build image_index.db
 
 on:
   schedule:
-    - cron: '0 15 * * *'   # 매일 UTC 03:00 (KST 12:00)
+    - cron: '0 3 * * *'   # 매일 UTC 03:00 (KST 12:00)
   workflow_dispatch:       # 수동 트리거
     inputs:
       force_all:
@@ -50,33 +50,21 @@ jobs:
           fi
           python scripts/build_image_db.py --db-path image_index.db $FORCE_FLAG
 
-      - name: Get song count
-        id: stats
-        run: |
-          COUNT=$(python -c "
-          import sqlite3
-          conn = sqlite3.connect('image_index.db')
-          count = conn.execute('SELECT COUNT(*) FROM images').fetchone()[0]
-          print(count)
-          ")
-          echo "count=$COUNT" >> $GITHUB_OUTPUT
-
       - name: Get current date tag
         id: tag
-        run: echo "tag=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
+        run: echo "tag=$(date +'%Y.%m.%d')" >> $GITHUB_OUTPUT
 
       - name: Create or update Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="db-${{ steps.tag.outputs.tag }}"
-          NOTES="자동 빌드 - ${{ steps.stats.outputs.count }}곡 등록됨"
+          TAG="v${{ steps.tag.outputs.tag }}"
 
           # 오늘 태그 릴리즈가 이미 있으면 삭제 후 재생성
           gh release delete "$TAG" --yes 2>/dev/null || true
 
           gh release create "$TAG" \
             image_index.db \
-            --title "Image DB ${{ steps.tag.outputs.tag }}" \
-            --notes "$NOTES" \
+            --title "Image DB $TAG" \
+            --notes-file release_notes.md \
             --latest
