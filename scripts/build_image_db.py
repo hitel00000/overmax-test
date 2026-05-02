@@ -69,7 +69,7 @@ def _get_existing_ids(db_path: Path) -> set[str]:
     try:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT image_id FROM images").fetchall()
-        return {r[0] for r in rows}
+        return {str(r[0]) for r in rows}
     except Exception as e:
         print(f"[DB] 기존 ID 조회 실패: {e}")
         return set()
